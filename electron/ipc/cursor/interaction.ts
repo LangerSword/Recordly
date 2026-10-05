@@ -6,6 +6,7 @@ import {
 	interactionCaptureCleanup,
 	isCursorCaptureActive,
 	lastLeftClick,
+	nativeCursorMonitorProcess,
 	setHasLoggedInteractionHookFailure,
 	setInteractionCaptureCleanup,
 	setLastLeftClick,
@@ -307,6 +308,14 @@ export async function startInteractionCapture() {
 				!isCursorCaptureActive ||
 				isCursorCapturePaused()
 			) {
+				return;
+			}
+
+			// The native cursor monitor polls the X server directly at a steady
+			// cadence; its positions are authoritative, and uiohook move events
+			// have been observed to glitch (teleport outliers), so keep the
+			// cache untouched while the helper is running.
+			if (nativeCursorMonitorProcess) {
 				return;
 			}
 
