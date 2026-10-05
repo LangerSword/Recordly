@@ -19,7 +19,6 @@ import {
 export function FeedbackDialog({
 	className,
 	showLabel = true,
-	onSignIn,
 }: {
 	className?: string;
 	showLabel?: boolean;
@@ -68,19 +67,7 @@ export function FeedbackDialog({
 					<Button onPress={() => setOpen(false)}>Done</Button>
 				) : !auth.user ? (
 					<div className="flex flex-col gap-4">
-						<Description>Sign in to send feedback.</Description>
-						{onSignIn ? (
-							<Button
-								onPress={() => {
-									setOpen(false);
-									onSignIn();
-								}}
-							>
-								Sign in
-							</Button>
-						) : (
-							<Description>Open Home to sign in.</Description>
-						)}
+						<Description>Feedback is not available in this build.</Description>
 					</div>
 				) : (
 					<Form

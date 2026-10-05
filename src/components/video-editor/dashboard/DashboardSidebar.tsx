@@ -2,7 +2,7 @@ import { FeedbackDialog } from "@/components/feedback/FeedbackDialog";
 import { RecordNewButton } from "./RecordNewButton";
 import { SidebarCards } from "./SidebarCards";
 import { FolderRow } from "./FolderRow";
-import { Cloud, File, GearSix, House, Plus, UserCircle } from "@/components/ui/icons";
+import { Cloud, File, GearSix, House, Plus } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
 
@@ -22,7 +22,6 @@ export function DashboardSidebar({
 	update,
 	navClass,
 	onSignIn,
-	accountLabel,
 }: Pick<
 	DashboardProps & DashboardModel,
 	| "busy"
@@ -148,10 +147,6 @@ export function DashboardSidebar({
 							className="size-[18px]"
 						/>
 						Settings
-					</Button>
-					<Button variant="ghost" className={navClass(false)} onClick={onSignIn}>
-						<UserCircle weight="fill" className="size-[18px] shrink-0" />
-						<span className="truncate">{accountLabel || "Sign in"}</span>
 					</Button>
 				</div>
 			</aside>

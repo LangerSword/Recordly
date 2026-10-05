@@ -1,7 +1,6 @@
 import { ExportErrorReportButton } from "@/components/feedback/ExportErrorReportButton";
 import { LinkSimple, HardDrive, Export } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { CloudShareButton } from "../cloud/CloudShareButton";
 import { Card, TagGroup, Tag } from "@heroui/react";
 import { motion, useReducedMotion } from "motion/react";
 import { ProgressBar } from "@heroui/react";
@@ -45,7 +44,8 @@ type Props = {
 export function EditorExportMenu(props: Props) {
 	const { publishDestination: destination, setPublishDestination: setDestination } =
 		props.exportSettings;
-	const [shareBusy, setShareBusy] = useState(false);
+	// Cloud sharing is removed from this build.
+	const shareBusy = false;
 	const reducedMotion = useReducedMotion();
 	const handledShareRequest = useRef(0);
 	const contentRef = useRef<HTMLDivElement>(null);
@@ -240,21 +240,9 @@ export function EditorExportMenu(props: Props) {
 							<div>
 								{destination === "link" ? (
 									<div className="px-5 pb-5">
-										<CloudShareButton
-											inline
-											projectPath={props.projectPath}
-											projectTitle={props.projectTitle}
-											prepareFile={props.prepareExportForShare}
-											onCancelPrepare={handleCancelExport}
-											preparationProgress={exportProgress?.percentage ?? 0}
-											authToken={props.authToken}
-											accountId={props.accountId}
-											onBusyChange={setShareBusy}
-											onRequestSignIn={() => {
-												setShowExportDropdown(false);
-												props.onRequestShareSignIn();
-											}}
-										/>
+									<p className="text-sm text-muted-foreground">
+										Cloud sharing is not available in this build.
+									</p>
 										{exportError && !shareBusy && (
 											<ExportErrorReportButton
 												key={exportError}

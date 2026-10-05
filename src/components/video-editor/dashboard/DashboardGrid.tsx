@@ -27,7 +27,6 @@ export function DashboardGrid({
 	section,
 	accountLabel,
 	authToken,
-	onSignIn,
 	onShareProject,
 	visible,
 	busy,
@@ -100,16 +99,7 @@ export function DashboardGrid({
 					) : (
 						<div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
 							<Cloud weight="fill" className="size-8 opacity-40" />
-							<p>
-								{authToken
-									? "Cloud sharing is not available in this build yet."
-									: "Sign in to manage shared videos."}
-							</p>
-							{!authToken && (
-								<Button variant="secondary" onClick={onSignIn}>
-									Sign in
-								</Button>
-							)}
+							<p>Cloud sharing is not available in this build.</p>
 						</div>
 					)
 				) : (isRaw ? rawLoading : loading) ? (

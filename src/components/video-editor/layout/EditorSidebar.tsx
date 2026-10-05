@@ -1,10 +1,8 @@
-import { AccountAvatar } from "@/components/ui/account-avatar";
 import type { User } from "@supabase/supabase-js";
 import { Camera, ClosedCaptioning, Cursor, Gear, FrameCorners } from "@/components/ui/icons";
 import {
 	ToggleButtonGroup,
 	ToggleButton,
-	Button,
 	Tooltip,
 	Card,
 	Switch,
@@ -29,12 +27,10 @@ type Props = {
 
 export function EditorSidebar({
 	t,
-	accountUser,
 	activeSection,
 	setActiveSection,
 	settingsPanelProps,
 	panelContent,
-	onAccountClick,
 }: Props) {
 	const [advancedSections, setAdvancedSections] = useState<Record<string, boolean>>({});
 	const advanced = advancedSections[activeSection] ?? false;
@@ -104,18 +100,6 @@ export function EditorSidebar({
 						</Tooltip>
 					))}
 				</ToggleButtonGroup>
-				<Tooltip>
-					<Button
-						variant="ghost"
-						isIconOnly
-						className="mt-auto"
-						aria-label="Recordly account"
-						onPress={onAccountClick}
-					>
-						<AccountAvatar user={accountUser} className="!size-7" />
-					</Button>
-					<Tooltip.Content placement="right">Account</Tooltip.Content>
-				</Tooltip>
 			</nav>
 			<aside
 				aria-label={panelContent ? "Clips" : undefined}
