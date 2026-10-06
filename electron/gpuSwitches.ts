@@ -4,6 +4,7 @@ export interface GpuSwitches {
 	useAngle?: string;
 	useGl?: string;
 	disableFeatures?: string[];
+	enableFeatures?: string[];
 }
 
 export function shouldForceLinuxEgl(env: NodeJS.ProcessEnv): boolean {
@@ -35,7 +36,21 @@ export function getGpuSwitches(
 		// all is the correct configuration there; the angle switch above
 		// stays for Electron 40+.
 		if (Number.isFinite(majorVersion) && majorVersion < 40) {
-			return {};
+			// Chromium 142 keeps VA-API video decode behind features (worked
+			// out of the box only from Chromium 143). The editor preview
+			// decodes VP9, so turn the GL decode paths on. The zero-copy GL
+			// variant is the recommended performance path on EGL/Wayland.
+			// RECORDLY_DISABLE_VAAPI=1 returns to plain software decode.
+			if (env.RECORDLY_DISABLE_VAAPI === "1") {
+				return {};
+			}
+			return {
+				enableFeatures: [
+					"AcceleratedVideoDecodeLinuxGL",
+					"AcceleratedVideoDecodeLinuxZeroCopyGL",
+					"VaapiIgnoreDriverChecks",
+				],
+			};
 		}
 		return {
 			...(shouldForceLinuxEgl(env) ? { useGl: "angle" } : {}),

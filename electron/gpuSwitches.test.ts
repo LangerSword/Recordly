@@ -65,9 +65,23 @@ describe("getGpuSwitches", () => {
 		});
 	});
 
-	it("sends no GL switches on Electron 39, whose default path works on Mesa/AMD", () => {
+	it("enables VA-API GL video decode on Electron 39, whose default path works on Mesa/AMD", () => {
+		expect(getGpuSwitches("linux", { XDG_SESSION_TYPE: "x11" }, "39.2.7")).toEqual({
+			enableFeatures: [
+				"AcceleratedVideoDecodeLinuxGL",
+				"AcceleratedVideoDecodeLinuxZeroCopyGL",
+				"VaapiIgnoreDriverChecks",
+			],
+		});
+	});
+
+	it("keeps the Electron 39 path plain when RECORDLY_DISABLE_VAAPI=1", () => {
 		expect(
-			getGpuSwitches("linux", { XDG_SESSION_TYPE: "x11" }, "39.2.7"),
+			getGpuSwitches(
+				"linux",
+				{ XDG_SESSION_TYPE: "x11", RECORDLY_DISABLE_VAAPI: "1" },
+				"39.2.7",
+			),
 		).toEqual({});
 	});
 });
