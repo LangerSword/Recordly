@@ -225,7 +225,7 @@ export function resolveBrowserCaptureCursorPolicy({
 }
 
 export function startMediaRecorderAtTimelineBoundary(
-	recorder: Pick<MediaRecorder, "addEventListener" | "removeEventListener" | "start">,
+	recorder: Pick<MediaRecorder, "addEventListener" | "removeEventListener" | "start" | "state">,
 	timesliceMs: number,
 	timeoutMs = 5_000,
 ) {
@@ -265,11 +265,99 @@ export function startMediaRecorderAtTimelineBoundary(
 		recorder.addEventListener("stop", handleFailure, { once: true });
 
 		try {
+			// start() throws InvalidStateError when the recorder is not
+			// "inactive" (e.g. a start that raced an existing one). Only a
+			// recorder that is demonstrably running is rejected; an absent
+			// state (non-standard implementations) is left to start().
+			if (recorder.state === "recording" || recorder.state === "paused") {
+				fail(
+					new Error(
+						`MediaRecorder cannot start because it is already "${recorder.state}".`,
+					),
+				);
+				return;
+			}
 			recorder.start(timesliceMs);
 		} catch (error) {
-			fail(error);
+			fail(describeRecorderStartFailure(error));
 		}
 	});
+}
+
+/**
+ * A MediaStream can only back a MediaRecorder while it still has a live video
+ * track. Screen capture tracks end when the capture session goes away — on
+ * Wayland the xdg-desktop-portal session can end while the stream sits idle
+ * (for example across a start countdown), and the next `start()` then fails
+ * with `NotSupportedError: The MediaRecorder's stream is inactive.`
+ */
+export function isStreamStartable(stream: MediaStream | null | undefined): boolean {
+	if (!stream) return false;
+	return stream
+		.getTracks()
+		.some((track) => track.kind === "video" && track.readyState === "live");
+}
+
+/**
+ * Rebuild a stream from its still-live tracks. A dead audio track (a vanished
+ * system-audio source, a closed microphone) must not take the whole recording
+ * down with it, so ended tracks are dropped rather than re-used.
+ */
+export function streamWithLiveTracksOnly(stream: MediaStream): MediaStream {
+	const live = stream.getTracks().filter((track) => track.readyState === "live");
+	if (live.length === stream.getTracks().length) return stream;
+	return new MediaStream(live);
+}
+
+/** Human-readable description of the recorder's track state, for diagnostics. */
+export function describeStreamTracks(stream: MediaStream | null | undefined): string {
+	if (!stream) return "no stream";
+	const tracks = stream.getTracks();
+	if (tracks.length === 0) return "stream has no tracks";
+	return tracks.map((track) => `${track.kind}:${track.readyState}`).join(", ");
+}
+
+/**
+ * Turn the DOMException that `MediaRecorder.start()` throws into something the
+ * user can act on. The raw message ("Failed to execute 'start' on
+ * MediaRecorder: ...") names neither the cause nor a remedy.
+ *
+ * Only the known browser failures are translated. Anything else is returned
+ * untouched, so an internal error keeps its own type and message.
+ */
+export function describeRecorderStartFailure(error: unknown): Error {
+	if (!(error instanceof Error)) {
+		return new Error("The recorder could not start. Please try again.");
+	}
+
+	const name = error.name ?? "";
+	const raw = error.message ?? "";
+
+	if (name === "NotSupportedError") {
+		if (/inactive/i.test(raw)) {
+			return new Error(
+				"The screen capture ended before recording could start. " +
+					"If you use a start countdown, try a shorter one, and keep the shared screen or window open until recording begins.",
+			);
+		}
+		if (/mime|codec/i.test(raw)) {
+			return new Error(
+				"This build cannot encode the selected video format. Try a lower resolution in Settings.",
+			);
+		}
+	}
+	if (name === "InvalidStateError") {
+		return new Error(
+			"The recorder was already running, so the new take was not started. Stop the current recording and try again.",
+		);
+	}
+	if (name === "SecurityError") {
+		return new Error(
+			"The system denied screen capture permission. Allow screen sharing and try again.",
+		);
+	}
+
+	return error;
 }
 
 export type NativeLinuxCaptureUnavailableReason =
@@ -1233,9 +1321,28 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	/** Start the prepared webcam MediaRecorder. Call after main recording begins. */
 	const beginWebcamCapture = useCallback(() => {
 		const recorder = webcamRecorder.current;
-		if (recorder && recorder.state === "inactive") {
+		if (!recorder || recorder.state !== "inactive") return;
+		// Called after the main recorder has already started, so a webcam
+		// failure must degrade to a screen-only recording — throwing here
+		// would abort a take that is otherwise running fine.
+		try {
 			webcamStartTime.current = Date.now();
 			recorder.start(RECORDER_TIMESLICE_MS);
+		} catch (error) {
+			console.warn(
+				"Failed to start the webcam layer; continuing with screen capture only:",
+				describeRecorderStartFailure(error),
+			);
+			webcamRecorder.current = null;
+			webcamStartTime.current = null;
+			webcamTimeOffsetMs.current = 0;
+			resolvedWebcamPath.current = null;
+			pendingWebcamPathPromise.current = Promise.resolve(null);
+			webcamStopPromise.current = Promise.resolve(null);
+			if (webcamStream.current) {
+				webcamStream.current.getTracks().forEach((track) => track.stop());
+				webcamStream.current = null;
+			}
 		}
 	}, []);
 
@@ -2172,21 +2279,24 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				},
 			};
 
+			// Hoisted out of the audio branch: the start-time recovery path
+			// below also needs to re-request the portal capture.
+			const acquireLinuxPortalStream = (withAudio: boolean) =>
+				mediaDevices.getDisplayMedia({
+					audio: withAudio,
+					video: {
+						displaySurface: "monitor",
+						width: { ideal: TARGET_WIDTH, max: TARGET_WIDTH },
+						height: { ideal: TARGET_HEIGHT, max: TARGET_HEIGHT },
+						frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
+						cursor: browserCursorPolicy.streamCursor,
+					},
+					selfBrowserSurface: "exclude",
+					surfaceSwitching: "exclude",
+				});
+
 			if (wantsAudioCapture) {
 				let screenMediaStream: MediaStream;
-				const acquireLinuxPortalStream = (withAudio: boolean) =>
-					mediaDevices.getDisplayMedia({
-						audio: withAudio,
-						video: {
-							displaySurface: "monitor",
-							width: { ideal: TARGET_WIDTH, max: TARGET_WIDTH },
-							height: { ideal: TARGET_HEIGHT, max: TARGET_HEIGHT },
-							frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
-							cursor: browserCursorPolicy.streamCursor,
-						},
-						selfBrowserSurface: "exclude",
-						surfaceSwitching: "exclude",
-					});
 
 				if (systemAudioEnabled) {
 					try {
@@ -2360,8 +2470,67 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				resetRecordingClock(recordingSessionTimestamp.current);
 			}
 
+			// The capture can end while the stream sits idle between the picker
+			// and this point — most often across the start countdown on Wayland,
+			// where the portal session owns the capture. Building a
+			// MediaRecorder on a stream with no live video track is what
+			// produced "Failed to execute 'start' on MediaRecorder: the stream
+			// is inactive", so verify and recover before constructing it.
+			if (!isStreamStartable(stream.current)) {
+				const stateBefore = describeStreamTracks(stream.current);
+				console.warn(`Screen capture is not startable yet (${stateBefore}).`);
+
+				if (useLinuxPortal) {
+					// The portal can drop a session that is not being consumed.
+					// Request it once more; other platforms have no equivalent
+					// recovery, so they fall through to the clear error below.
+					try {
+						const recovered = await acquireLinuxPortalStream(false);
+						const recoveredVideo = recovered.getVideoTracks()[0];
+						if (!recoveredVideo) {
+							throw new Error("The re-requested capture returned no video track.");
+						}
+						const liveAudio = stream.current
+							.getAudioTracks()
+							.filter((track) => track.readyState === "live");
+						stream.current = new MediaStream([recoveredVideo, ...liveAudio]);
+						videoTrack = recoveredVideo;
+						if (screenStream.current) {
+							screenStream.current.getTracks().forEach((track) => track.stop());
+						}
+						screenStream.current = recovered;
+						console.info(
+							`Screen capture re-acquired (${describeStreamTracks(stream.current)}).`,
+						);
+					} catch (recoveryError) {
+						console.error("Failed to re-acquire screen capture:", recoveryError);
+						throw new Error(
+							"The screen capture ended before recording could start. " +
+								"If you use a start countdown, try a shorter one, and keep the shared screen or window open until recording begins.",
+						);
+					}
+				}
+
+				if (!isStreamStartable(stream.current)) {
+					throw new Error(
+						`The screen capture ended before recording could start (${describeStreamTracks(stream.current)}). ` +
+							"Keep the shared screen or window open and try again.",
+					);
+				}
+			}
+
+			// A stream that still carries ended tracks makes start() fail as
+			// "inactive", so drop them: a vanished microphone or system-audio
+			// source must not take the whole recording down with it.
+			stream.current = streamWithLiveTracksOnly(stream.current);
+
 			chunks.current = [];
-			const hasAudio = stream.current.getAudioTracks().length > 0;
+			// Only live audio counts: getAudioTracks() also returns ended
+			// tracks, which would claim an audio track the recorder does not
+			// actually have.
+			const hasAudio = stream.current
+				.getAudioTracks()
+				.some((track) => track.readyState === "live");
 			const audioBitsPerSecond = hasAudio
 				? systemAudioIncluded
 					? AUDIO_BITRATE_SYSTEM

@@ -10,6 +10,10 @@ import {
 	shouldUseNativeWindowsCaptureForSource,
 	startMediaRecorderAtTimelineBoundary,
 	stopAndDiscardNativeCapture,
+	isStreamStartable,
+	streamWithLiveTracksOnly,
+	describeStreamTracks,
+	describeRecorderStartFailure,
 } from "./useScreenRecorder";
 
 type RecordingState = "inactive" | "recording" | "paused";
@@ -1039,5 +1043,178 @@ describe("useScreenRecorder state machine", () => {
 			expect(recorder.state).toBe("inactive");
 			expect(webcam.state).toBe("inactive");
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// "Failed to execute 'start' on MediaRecorder" — start-time stream validation.
+//
+// The reported failure is a MediaRecorder whose stream went inactive between
+// acquiring the screen capture and calling start() (on Wayland the portal can
+// drop a session that sits idle across the start countdown). These cover the
+// guards that detect and describe that, plus the recovery helpers.
+// ---------------------------------------------------------------------------
+
+function createMockTrack(kind: "video" | "audio", readyState: "live" | "ended"): MediaStreamTrack {
+	return { kind, readyState } as unknown as MediaStreamTrack;
+}
+
+function createMockStream(tracks: MediaStreamTrack[]): MediaStream {
+	return {
+		getTracks: () => [...tracks],
+		getVideoTracks: () => tracks.filter((t) => t.kind === "video"),
+		getAudioTracks: () => tracks.filter((t) => t.kind === "audio"),
+	} as unknown as MediaStream;
+}
+
+const domError = (name: string, message: string): Error =>
+	Object.assign(new Error(message), { name });
+
+describe("isStreamStartable", () => {
+	it("accepts a stream with a live video track", () => {
+		expect(
+			isStreamStartable(
+				createMockStream([createMockTrack("video", "live"), createMockTrack("audio", "live")]),
+			),
+		).toBe(true);
+	});
+
+	it("accepts a stream whose audio died but whose video is live", () => {
+		expect(
+			isStreamStartable(
+				createMockStream([createMockTrack("video", "live"), createMockTrack("audio", "ended")]),
+			),
+		).toBe(true);
+	});
+
+	it("rejects a stream whose video track ended — the reported failure", () => {
+		expect(isStreamStartable(createMockStream([createMockTrack("video", "ended")]))).toBe(false);
+	});
+
+	it("rejects an audio-only stream", () => {
+		expect(isStreamStartable(createMockStream([createMockTrack("audio", "live")]))).toBe(false);
+	});
+
+	it("rejects a missing or empty stream", () => {
+		expect(isStreamStartable(null)).toBe(false);
+		expect(isStreamStartable(undefined)).toBe(false);
+		expect(isStreamStartable(createMockStream([]))).toBe(false);
+	});
+});
+
+describe("streamWithLiveTracksOnly", () => {
+	it("returns the same stream when every track is live", () => {
+		const stream = createMockStream([createMockTrack("video", "live")]);
+		expect(streamWithLiveTracksOnly(stream)).toBe(stream);
+	});
+
+	it("drops ended tracks so a dead microphone cannot block start()", () => {
+		const OriginalMediaStream = (globalThis as { MediaStream?: unknown }).MediaStream;
+		class FakeMediaStream {
+			constructor(public tracks: MediaStreamTrack[] = []) {}
+			getTracks(): MediaStreamTrack[] {
+				return [...this.tracks];
+			}
+		}
+		(globalThis as { MediaStream?: unknown }).MediaStream = FakeMediaStream;
+
+		try {
+			const video = createMockTrack("video", "live");
+			const deadAudio = createMockTrack("audio", "ended");
+			const pruned = streamWithLiveTracksOnly(createMockStream([video, deadAudio]));
+
+			expect(pruned).not.toBe(undefined);
+			expect((pruned as unknown as { tracks: MediaStreamTrack[] }).tracks).toEqual([video]);
+		} finally {
+			(globalThis as { MediaStream?: unknown }).MediaStream = OriginalMediaStream;
+		}
+	});
+});
+
+describe("describeStreamTracks", () => {
+	it("names each track and its readiness", () => {
+		expect(
+			describeStreamTracks(
+				createMockStream([createMockTrack("video", "ended"), createMockTrack("audio", "live")]),
+			),
+		).toBe("video:ended, audio:live");
+	});
+
+	it("handles a missing or empty stream", () => {
+		expect(describeStreamTracks(null)).toBe("no stream");
+		expect(describeStreamTracks(createMockStream([]))).toBe("stream has no tracks");
+	});
+});
+
+describe("describeRecorderStartFailure", () => {
+	it("explains an inactive stream instead of repeating the DOMException", () => {
+		const described = describeRecorderStartFailure(
+			domError(
+				"NotSupportedError",
+				"Failed to execute 'start' on 'MediaRecorder': The MediaRecorder's stream is inactive.",
+			),
+		);
+
+		expect(described.message).toContain("screen capture ended before recording could start");
+		expect(described.message).toContain("countdown");
+	});
+
+	it("explains an unsupported video format", () => {
+		const described = describeRecorderStartFailure(
+			domError("NotSupportedError", "MIME type video/webm;codecs=h264 is not supported"),
+		);
+
+		expect(described.message).toContain("cannot encode the selected video format");
+	});
+
+	it("explains a recorder that is already running", () => {
+		const described = describeRecorderStartFailure(
+			domError("InvalidStateError", "The MediaRecorder's state is 'recording'."),
+		);
+
+		expect(described.message).toContain("already running");
+	});
+
+	it("explains a denied capture permission", () => {
+		const described = describeRecorderStartFailure(
+			domError("SecurityError", "Permission denied"),
+		);
+
+		expect(described.message).toContain("denied screen capture permission");
+	});
+
+	it("passes an unrecognized error through untouched", () => {
+		const original = new Error("unsupported recording configuration");
+		expect(describeRecorderStartFailure(original)).toBe(original);
+	});
+
+	it("describes a non-Error throw", () => {
+		expect(describeRecorderStartFailure("boom").message).toContain("could not start");
+	});
+});
+
+describe("startMediaRecorderAtTimelineBoundary start guard", () => {
+	it("refuses to start a recorder that is already recording", async () => {
+		const recorder = Object.assign(new EventTarget(), {
+			state: "recording" as RecordingState,
+			start: vi.fn(),
+		}) as unknown as MediaRecorder;
+
+		await expect(startMediaRecorderAtTimelineBoundary(recorder, 250)).rejects.toThrow(
+			/already "recording"/,
+		);
+		expect(recorder.start).not.toHaveBeenCalled();
+	});
+
+	it("refuses to start a paused recorder", async () => {
+		const recorder = Object.assign(new EventTarget(), {
+			state: "paused" as RecordingState,
+			start: vi.fn(),
+		}) as unknown as MediaRecorder;
+
+		await expect(startMediaRecorderAtTimelineBoundary(recorder, 250)).rejects.toThrow(
+			/already "paused"/,
+		);
+		expect(recorder.start).not.toHaveBeenCalled();
 	});
 });
